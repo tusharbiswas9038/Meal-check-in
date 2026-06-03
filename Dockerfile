@@ -12,5 +12,5 @@ WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=build /app /app
 RUN npm install --omit=dev && npm cache clean --force
-EXPOSE 8080
+EXPOSE 9900
 CMD ["npm", "start"]
