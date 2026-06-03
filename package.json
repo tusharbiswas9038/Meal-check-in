@@ -14,9 +14,11 @@
     "pm2:stop": "pm2 stop meal-checkin-api",
     "pm2:logs": "pm2 logs meal-checkin-api",
     "vapid:keys": "npx web-push generate-vapid-keys",
-    "cf:pages:deploy": "wrangler pages deploy client/dist"
+    "cf:pages:deploy": "wrangler pages deploy client/dist --project-name meal-check-in --branch main",
+    "cf:deploy": "wrangler pages deploy client/dist --project-name meal-check-in --branch main"
   },
   "devDependencies": {
-    "concurrently": "^9.0.1"
+    "concurrently": "^9.0.1",
+    "wrangler": "^4.97.0"
   }
 }

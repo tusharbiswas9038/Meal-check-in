@@ -110,12 +110,14 @@ Framework preset: None or Vite
 Build command: npm run build
 Build output directory: client/dist
 Root directory: /
-Deploy command: leave empty / unset
+Deploy command: npm run cf:deploy
 ```
 
-Important: do not set the deploy command to `npx wrangler deploy`. That command deploys Workers and fails at the root of this npm workspace. Cloudflare Pages Git integration automatically deploys the files from `client/dist` after the build succeeds.
+Important: do not set the deploy command to `npx wrangler deploy`. That command deploys Workers and fails at the root of this npm workspace. If Cloudflare requires a deploy command, use `npm run cf:deploy`; it deploys the built `client/dist` folder as a Pages project.
 
-No Cloudflare environment variable is required. On first launch, if the app cannot reach an API, it shows a setup screen asking for the VPS backend URL. Enter the HTTPS API URL once, and the app stores it in the browser.
+If your Cloudflare screen requires a deploy command, add a Cloudflare environment variable named `CLOUDFLARE_API_TOKEN`. The token must include Account > Cloudflare Pages > Edit for the account that owns the project.
+
+No app-specific Cloudflare environment variable is required. On first launch, if the app cannot reach an API, it shows a setup screen asking for the VPS backend URL. Enter the HTTPS API URL once, and the app stores it in the browser.
 
 Optional: if you want zero first-run setup in the browser, add this Cloudflare Pages environment variable:
 
@@ -127,7 +129,7 @@ Manual Pages deploy fallback:
 
 ```bash
 npm run build
-npm run cf:pages:deploy
+npm run cf:deploy
 ```
 
 Use the manual Wrangler command only from your machine or CI with Cloudflare authentication. Do not add it as the Cloudflare Pages Git deploy command.
