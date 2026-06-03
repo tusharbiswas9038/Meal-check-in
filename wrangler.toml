@@ -1,0 +1,3 @@
+name = "meal-check-in"
+pages_build_output_dir = "client/dist"
+compatibility_date = "2026-06-03"
