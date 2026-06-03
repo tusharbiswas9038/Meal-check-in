@@ -1,10 +1,10 @@
 # Meal Check In Cloud
 
-A private React + Express + SQLite meal expense tracker with PWA install support, web push reminders, weekly summaries, CSV export, and Cloudflare Pages friendly frontend deployment.
+A private React + Express + SQLite meal expense tracker with PWA install support, web push reminders, weekly summaries, CSV export, and Cloudflare-hosted frontend deployment.
 
 ## Architecture
 
-- Frontend: Vite + React static app, deployable to Cloudflare Pages.
+- Frontend: Vite + React static app deployed through Cloudflare Workers Builds as Static Assets.
 - Backend: Express API on a VPS, default port `9900`.
 - Database: SQLite at `./data/meal-check-in.db` by default.
 - Process manager: PM2 using `ecosystem.config.cjs`.
@@ -36,7 +36,7 @@ Edit `.env`:
 ```env
 PORT=9900
 DB_PATH=./data/meal-check-in.db
-CLIENT_ORIGIN=https://YOUR-CLOUDFLARE-PAGES-SITE.pages.dev
+CLIENT_ORIGIN=https://YOUR-CLOUDFLARE-FRONTEND-URL
 APP_TOKEN=choose-a-long-private-token
 VAPID_PUBLIC_KEY=paste-public-key
 VAPID_PRIVATE_KEY=paste-private-key
@@ -99,44 +99,58 @@ Your frontend must use the HTTPS API URL, for example:
 https://YOUR_API_DOMAIN
 ```
 
-## Cloudflare Pages Frontend
+## Cloudflare Frontend
 
-Connect this Git repo to Cloudflare Pages.
+Your current Cloudflare screen requires a deploy command, which means Cloudflare is using the Workers Builds flow. This repo is configured for that flow with Workers Static Assets.
 
-Use these build settings:
+Use these settings:
 
 ```text
-Framework preset: None or Vite
 Build command: npm run build
-Build output directory: client/dist
-Root directory: /
 Deploy command: npm run cf:deploy
+Root directory: /
 ```
 
-Important: do not set the deploy command to `npx wrangler deploy`. That command deploys Workers and fails at the root of this npm workspace. If Cloudflare requires a deploy command, use `npm run cf:deploy`; it deploys the built `client/dist` folder as a Pages project.
+The deploy script runs:
 
-If your Cloudflare screen requires a deploy command, add a Cloudflare environment variable named `CLOUDFLARE_API_TOKEN`. The token must include Account > Cloudflare Pages > Edit for the account that owns the project.
+```bash
+wrangler deploy
+```
+
+The `wrangler.toml` file tells Cloudflare to publish the built Vite files from `client/dist` as static assets and use SPA fallback routing:
+
+```toml
+name = "meal-check-in"
+compatibility_date = "2026-06-03"
+
+[assets]
+directory = "./client/dist"
+not_found_handling = "single-page-application"
+```
+
+Do not use `npx wrangler pages deploy ...` in this Workers Builds setup. That command calls the Pages API and is the reason the deploy step fails after a successful build.
+
+For the Cloudflare deploy token, use Workers permissions, not Pages permissions:
+
+```text
+Account > Workers Scripts > Edit
+Account > Workers Builds Configuration > Edit
+User > User Details > Read
+```
+
+Scope the token to the account that owns the Cloudflare project. If your token already has broad account access, no extra repo change is needed.
 
 No app-specific Cloudflare environment variable is required. On first launch, if the app cannot reach an API, it shows a setup screen asking for the VPS backend URL. Enter the HTTPS API URL once, and the app stores it in the browser.
 
-Optional: if you want zero first-run setup in the browser, add this Cloudflare Pages environment variable:
+Optional: if you want zero first-run setup in the browser, add this Cloudflare environment variable:
 
 ```env
 VITE_API_BASE=https://YOUR_API_DOMAIN
 ```
 
-Manual Pages deploy fallback:
-
-```bash
-npm run build
-npm run cf:deploy
-```
-
-Use the manual Wrangler command only from your machine or CI with Cloudflare authentication. Do not add it as the Cloudflare Pages Git deploy command.
-
 ## First Login Flow
 
-1. Open the Cloudflare Pages URL.
+1. Open the Cloudflare frontend URL.
 2. If prompted, enter the backend API URL: `https://YOUR_API_DOMAIN`.
 3. If prompted, enter the private `APP_TOKEN` from the VPS `.env` file.
 4. Go to Settings and enable daily push reminders.
@@ -147,5 +161,5 @@ Use the manual Wrangler command only from your machine or CI with Cloudflare aut
 - Keep `data/` persistent; it contains the SQLite database.
 - Keep `.env` private and do not commit it.
 - PM2 writes API logs to `logs/`; error middleware and unhandled runtime errors go to the PM2 error log.
-- Web push requires HTTPS for both Cloudflare Pages and the backend API.
+- Web push requires HTTPS for both the Cloudflare frontend and the backend API.
 - If the backend URL changes, update it inside app Settings or clear local storage and reconnect.
