@@ -33,16 +33,16 @@ db.pragma('journal_mode = WAL');
 db.exec(`
   CREATE TABLE IF NOT EXISTS expenses (
     id TEXT PRIMARY KEY,
+    expense_kind TEXT NOT NULL DEFAULT 'meal' CHECK(expense_kind IN ('meal','extra')),
     expense_date TEXT NOT NULL,
-    meal_type TEXT NOT NULL CHECK(meal_type IN ('lunch','dinner')),
+    meal_type TEXT DEFAULT '',
     amount REAL NOT NULL,
+    title TEXT DEFAULT '',
     note TEXT DEFAULT '',
     tag TEXT DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
-  CREATE UNIQUE INDEX IF NOT EXISTS ux_expenses_date_meal ON expenses(expense_date, meal_type);
-
   CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -58,6 +58,7 @@ db.exec(`
     last_error TEXT DEFAULT ''
   );
 `);
+ensureExpenseSchema();
 
 process.on('unhandledRejection', (error) => {
   console.error('Unhandled promise rejection', error);
@@ -101,23 +102,28 @@ app.get('/api/bootstrap', (_req, res, next) => {
 app.put('/api/expenses', (req, res, next) => {
   try {
     const payload = normalizeExpense(req.body || {});
-    const existing = db.prepare('SELECT id, created_at FROM expenses WHERE expense_date = ? AND meal_type = ?').get(payload.expense_date, payload.meal_type);
     const now = new Date().toISOString();
+    const existing = payload.expense_kind === 'meal'
+      ? db.prepare('SELECT id, created_at FROM expenses WHERE expense_date = ? AND meal_type = ? AND expense_kind = ?').get(payload.expense_date, payload.meal_type, payload.expense_kind)
+      : null;
     const expense = {
       id: existing?.id || payload.id || crypto.randomUUID(),
+      expense_kind: payload.expense_kind,
       expense_date: payload.expense_date,
       meal_type: payload.meal_type,
       amount: payload.amount,
+      title: payload.title,
       note: payload.note,
       tag: payload.tag,
       created_at: existing?.created_at || now,
       updated_at: now
     };
     db.prepare(`
-      INSERT INTO expenses (id, expense_date, meal_type, amount, note, tag, created_at, updated_at)
-      VALUES (@id, @expense_date, @meal_type, @amount, @note, @tag, @created_at, @updated_at)
-      ON CONFLICT(expense_date, meal_type) DO UPDATE SET
+      INSERT INTO expenses (id, expense_kind, expense_date, meal_type, amount, title, note, tag, created_at, updated_at)
+      VALUES (@id, @expense_kind, @expense_date, @meal_type, @amount, @title, @note, @tag, @created_at, @updated_at)
+      ON CONFLICT(expense_date, meal_type) WHERE expense_kind = 'meal' DO UPDATE SET
         amount = excluded.amount,
+        title = excluded.title,
         note = excluded.note,
         tag = excluded.tag,
         updated_at = excluded.updated_at
@@ -126,13 +132,20 @@ app.put('/api/expenses', (req, res, next) => {
   } catch (error) { next(error); }
 });
 
-app.delete('/api/expenses/:date/:mealType', (req, res, next) => {
+app.delete('/api/expenses/:date/:kind/:itemId?', (req, res, next) => {
   try {
-    const { date, mealType } = req.params;
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !['lunch', 'dinner'].includes(mealType)) {
+    const { date, kind, itemId } = req.params;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !['meal', 'extra'].includes(kind)) {
       return res.status(400).json({ error: 'Invalid expense target.' });
     }
-    db.prepare('DELETE FROM expenses WHERE expense_date = ? AND meal_type = ?').run(date, mealType);
+    if (kind === 'meal') {
+      const mealType = String(itemId || '').trim();
+      if (!['lunch', 'dinner'].includes(mealType)) return res.status(400).json({ error: 'Invalid meal target.' });
+      db.prepare('DELETE FROM expenses WHERE expense_date = ? AND meal_type = ? AND expense_kind = ?').run(date, mealType, 'meal');
+    } else {
+      if (!itemId) return res.status(400).json({ error: 'Missing extra expense id.' });
+      db.prepare('DELETE FROM expenses WHERE expense_date = ? AND id = ? AND expense_kind = ?').run(date, itemId, 'extra');
+    }
     res.json({ ok: true });
   } catch (error) { next(error); }
 });
@@ -204,8 +217,8 @@ app.get('/api/export.csv', (_req, res, next) => {
   try {
     const rows = listExpenses();
     const csvRows = [
-      ['date', 'meal_type', 'amount', 'note', 'tag', 'created_at', 'updated_at'],
-      ...rows.map((row) => [row.date, row.mealType, row.amount.toFixed(2), row.note || '', row.tag || '', row.createdAt, row.updatedAt])
+      ['date', 'kind', 'meal_type', 'title', 'amount', 'note', 'tag', 'created_at', 'updated_at'],
+      ...rows.map((row) => [row.date, row.kind, row.mealType, row.title || '', row.amount.toFixed(2), row.note || '', row.tag || '', row.createdAt, row.updatedAt])
     ];
     const csv = csvRows.map((row) => row.map(csvCell).join(',')).join('\n');
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
@@ -311,6 +324,47 @@ function getSettings() {
     return acc;
   }, { ...DEFAULT_SETTINGS });
 }
+function ensureExpenseSchema() {
+  const table = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'expenses'").get();
+  if (table?.sql?.includes("meal_type IN ('lunch','dinner')")) {
+    rebuildExpensesTable();
+  }
+  const columns = new Set(db.prepare('PRAGMA table_info(expenses)').all().map((row) => row.name));
+  const alter = db.transaction(() => {
+    if (!columns.has('expense_kind')) db.exec(`ALTER TABLE expenses ADD COLUMN expense_kind TEXT NOT NULL DEFAULT 'meal'`);
+    if (!columns.has('title')) db.exec(`ALTER TABLE expenses ADD COLUMN title TEXT DEFAULT ''`);
+    if (!columns.has('meal_type')) db.exec(`ALTER TABLE expenses ADD COLUMN meal_type TEXT DEFAULT ''`);
+  });
+  alter();
+  db.exec(`DROP INDEX IF EXISTS ux_expenses_date_meal`);
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS ux_expenses_date_meal ON expenses(expense_date, meal_type) WHERE expense_kind = 'meal'`);
+  db.exec(`UPDATE expenses SET expense_kind = 'meal' WHERE expense_kind IS NULL OR expense_kind = ''`);
+}
+function rebuildExpensesTable() {
+  db.transaction(() => {
+    db.exec(`ALTER TABLE expenses RENAME TO expenses_old`);
+    db.exec(`
+      CREATE TABLE expenses (
+        id TEXT PRIMARY KEY,
+        expense_kind TEXT NOT NULL DEFAULT 'meal' CHECK(expense_kind IN ('meal','extra')),
+        expense_date TEXT NOT NULL,
+        meal_type TEXT DEFAULT '',
+        amount REAL NOT NULL,
+        title TEXT DEFAULT '',
+        note TEXT DEFAULT '',
+        tag TEXT DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `);
+    db.exec(`
+      INSERT INTO expenses (id, expense_kind, expense_date, meal_type, amount, title, note, tag, created_at, updated_at)
+      SELECT id, 'meal', expense_date, meal_type, amount, '', note, tag, created_at, updated_at
+      FROM expenses_old
+    `);
+    db.exec(`DROP TABLE expenses_old`);
+  })();
+}
 function setSettings(settings) {
   const insert = db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value');
   db.transaction(() => {
@@ -326,19 +380,43 @@ function setSettingValue(key, value) {
   db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, JSON.stringify(value));
 }
 function listExpenses() {
-  return db.prepare('SELECT id, expense_date, meal_type, amount, note, tag, created_at, updated_at FROM expenses ORDER BY expense_date DESC, meal_type ASC').all().map(mapExpense);
+  return db.prepare('SELECT id, expense_kind, expense_date, meal_type, amount, title, note, tag, created_at, updated_at FROM expenses ORDER BY expense_date DESC, expense_kind ASC, meal_type ASC, created_at DESC').all().map(mapExpense);
 }
 function mapExpense(row) {
-  return { id: row.id, date: row.expense_date, mealType: row.meal_type, amount: Number(row.amount), note: row.note || '', tag: row.tag || '', createdAt: row.created_at, updatedAt: row.updated_at };
+  return {
+    id: row.id,
+    kind: row.expense_kind || 'meal',
+    date: row.expense_date,
+    mealType: row.meal_type || '',
+    amount: Number(row.amount),
+    title: row.title || '',
+    note: row.note || '',
+    tag: row.tag || '',
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
 }
 function normalizeExpense(input) {
   const expense_date = String(input.date || '').trim();
+  const expense_kind = String(input.kind || 'meal').trim();
   const meal_type = String(input.mealType || '').trim();
   const amount = Number(input.amount);
+  const title = String(input.title || '').trim().slice(0, 80);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(expense_date)) throw badRequest('Invalid date.');
-  if (!['lunch', 'dinner'].includes(meal_type)) throw badRequest('Invalid meal type.');
+  if (!['meal', 'extra'].includes(expense_kind)) throw badRequest('Invalid expense kind.');
+  if (expense_kind === 'meal' && !['lunch', 'dinner'].includes(meal_type)) throw badRequest('Invalid meal type.');
+  if (expense_kind === 'extra' && !title) throw badRequest('Extra food expenses need a title.');
   if (!Number.isFinite(amount) || amount <= 0) throw badRequest('Amount must be greater than zero.');
-  return { id: input.id, expense_date, meal_type, amount: Math.round(amount * 100) / 100, note: String(input.note || '').trim().slice(0, 140), tag: String(input.tag || '').trim().slice(0, 32) };
+  return {
+    id: input.id,
+    expense_kind,
+    expense_date,
+    meal_type: expense_kind === 'meal' ? meal_type : '',
+    amount: Math.round(amount * 100) / 100,
+    title,
+    note: String(input.note || '').trim().slice(0, 140),
+    tag: String(input.tag || '').trim().slice(0, 32)
+  };
 }
 function normalizeSubscription(input) {
   if (!input || typeof input !== 'object') throw badRequest('Missing push subscription.');

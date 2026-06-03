@@ -68,7 +68,7 @@ export const api = {
   setToken: writeToken,
   bootstrap: () => request('/api/bootstrap'),
   upsertExpense: (payload) => request('/api/expenses', { method: 'PUT', body: JSON.stringify(payload) }),
-  deleteExpense: (date, mealType) => request(`/api/expenses/${date}/${mealType}`, { method: 'DELETE' }),
+  deleteExpense: (date, kind, itemId) => request(`/api/expenses/${date}/${kind}/${itemId || ''}`, { method: 'DELETE' }),
   updateSettings: (payload) => request('/api/settings', { method: 'PUT', body: JSON.stringify(payload) }),
   getPushPublicKey: () => request('/api/push/public-key'),
   subscribePush: (subscription) => request('/api/push/subscribe', { method: 'POST', body: JSON.stringify({ subscription }) }),

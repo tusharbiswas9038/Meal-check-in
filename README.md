@@ -1,6 +1,6 @@
 # Meal Check In Cloud
 
-A private React + Express + SQLite meal expense tracker with PWA install support, web push reminders, weekly summaries, CSV export, and Cloudflare-hosted frontend deployment.
+A private React + Express + SQLite food expense tracker with lunch/dinner check-ins, additional food expenses, PWA install support, web push reminders, weekly summaries, CSV export, and Cloudflare-hosted frontend deployment.
 
 ## Architecture
 

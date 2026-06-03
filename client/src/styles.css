@@ -105,6 +105,8 @@ h1, h2, h3, p { margin-top: 0; }
 .toggle.on { background: var(--primary-soft); color: var(--primary); }
 
 .history-row { padding: 14px 0; border-top: 1px solid var(--border); align-items: start; }
+.extra-list { display: grid; gap: 0; margin-top: 4px; }
+.extra-row:first-child { border-top: 0; }
 .history-actions { text-align: right; display: grid; gap: 8px; }
 .history-meal { margin: 0 0 4px; font-weight: 800; }
 .tiny-link { border: 0; background: transparent; color: var(--muted); padding: 0; }
