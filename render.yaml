@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: meal-checkin-cloud
+    runtime: node
+    rootDir: .
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: PORT
+        value: 8080
+      - key: DB_PATH
+        value: /opt/render/project/src/data/meal-check-in.db
+      - key: APP_TOKEN
+        sync: false
+    disk:
+      name: meal-checkin-data
+      mountPath: /opt/render/project/src/data
+      sizeGB: 1
