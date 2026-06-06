@@ -33,11 +33,13 @@ db.pragma('journal_mode = WAL');
 db.exec(`
   CREATE TABLE IF NOT EXISTS expenses (
     id TEXT PRIMARY KEY,
-    expense_kind TEXT NOT NULL DEFAULT 'meal' CHECK(expense_kind IN ('meal','extra')),
+    expense_kind TEXT NOT NULL DEFAULT 'meal' CHECK(expense_kind IN ('meal','extra','monthly')),
     expense_date TEXT NOT NULL,
     meal_type TEXT DEFAULT '',
     amount REAL NOT NULL,
     title TEXT DEFAULT '',
+    category TEXT DEFAULT '',
+    recurring_id TEXT DEFAULT '',
     note TEXT DEFAULT '',
     tag TEXT DEFAULT '',
     created_at TEXT NOT NULL,
@@ -56,6 +58,26 @@ db.exec(`
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     last_error TEXT DEFAULT ''
+  );
+
+  CREATE TABLE IF NOT EXISTS recurring_expenses (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    category TEXT NOT NULL,
+    amount REAL NOT NULL,
+    note TEXT DEFAULT '',
+    tag TEXT DEFAULT '',
+    day_of_month INTEGER NOT NULL DEFAULT 1,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS skipped_recurring_expenses (
+    recurring_id TEXT NOT NULL,
+    month TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (recurring_id, month)
   );
 `);
 ensureExpenseSchema();
@@ -113,17 +135,21 @@ app.put('/api/expenses', (req, res, next) => {
       meal_type: payload.meal_type,
       amount: payload.amount,
       title: payload.title,
+      category: payload.category,
+      recurring_id: payload.recurring_id,
       note: payload.note,
       tag: payload.tag,
       created_at: existing?.created_at || now,
       updated_at: now
     };
     db.prepare(`
-      INSERT INTO expenses (id, expense_kind, expense_date, meal_type, amount, title, note, tag, created_at, updated_at)
-      VALUES (@id, @expense_kind, @expense_date, @meal_type, @amount, @title, @note, @tag, @created_at, @updated_at)
+      INSERT INTO expenses (id, expense_kind, expense_date, meal_type, amount, title, category, recurring_id, note, tag, created_at, updated_at)
+      VALUES (@id, @expense_kind, @expense_date, @meal_type, @amount, @title, @category, @recurring_id, @note, @tag, @created_at, @updated_at)
       ON CONFLICT(expense_date, meal_type) WHERE expense_kind = 'meal' DO UPDATE SET
         amount = excluded.amount,
         title = excluded.title,
+        category = excluded.category,
+        recurring_id = excluded.recurring_id,
         note = excluded.note,
         tag = excluded.tag,
         updated_at = excluded.updated_at
@@ -135,7 +161,7 @@ app.put('/api/expenses', (req, res, next) => {
 app.delete('/api/expenses/:date/:kind/:itemId?', (req, res, next) => {
   try {
     const { date, kind, itemId } = req.params;
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !['meal', 'extra'].includes(kind)) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !['meal', 'extra', 'monthly'].includes(kind)) {
       return res.status(400).json({ error: 'Invalid expense target.' });
     }
     if (kind === 'meal') {
@@ -144,7 +170,7 @@ app.delete('/api/expenses/:date/:kind/:itemId?', (req, res, next) => {
       db.prepare('DELETE FROM expenses WHERE expense_date = ? AND meal_type = ? AND expense_kind = ?').run(date, mealType, 'meal');
     } else {
       if (!itemId) return res.status(400).json({ error: 'Missing extra expense id.' });
-      db.prepare('DELETE FROM expenses WHERE expense_date = ? AND id = ? AND expense_kind = ?').run(date, itemId, 'extra');
+      db.prepare('DELETE FROM expenses WHERE expense_date = ? AND id = ? AND expense_kind = ?').run(date, itemId, kind);
     }
     res.json({ ok: true });
   } catch (error) { next(error); }
@@ -165,6 +191,87 @@ app.put('/api/settings', (req, res, next) => {
     };
     setSettings(settings);
     res.json({ settings: getSettings() });
+  } catch (error) { next(error); }
+});
+
+app.get('/api/monthly', (req, res, next) => {
+  try {
+    const month = normalizeMonth(req.query.month || todayISO().slice(0, 7));
+    ensureRecurringInstances(month);
+    res.json(buildMonthlyPayload(month));
+  } catch (error) { next(error); }
+});
+
+app.put('/api/monthly/expenses', (req, res, next) => {
+  try {
+    const input = req.body || {};
+    const recurring = Boolean(input.recurring);
+    const month = normalizeMonth(input.month || String(input.date || todayISO()).slice(0, 7));
+    const now = new Date().toISOString();
+
+    if (recurring && !input.id) {
+      const template = normalizeRecurringExpense(input);
+      db.prepare(`
+        INSERT INTO recurring_expenses (id, title, category, amount, note, tag, day_of_month, active, created_at, updated_at)
+        VALUES (@id, @title, @category, @amount, @note, @tag, @day_of_month, 1, @created_at, @updated_at)
+      `).run({ ...template, created_at: now, updated_at: now });
+      ensureRecurringInstances(month);
+      res.json(buildMonthlyPayload(month));
+      return;
+    }
+
+    const payload = normalizeExpense({ ...input, kind: 'monthly', date: input.date || `${month}-01` });
+    const existing = payload.id ? db.prepare('SELECT created_at FROM expenses WHERE id = ? AND expense_kind = ?').get(payload.id, 'monthly') : null;
+    const expense = {
+      id: payload.id || crypto.randomUUID(),
+      expense_kind: 'monthly',
+      expense_date: payload.expense_date,
+      meal_type: '',
+      amount: payload.amount,
+      title: payload.title,
+      category: payload.category,
+      recurring_id: payload.recurring_id,
+      note: payload.note,
+      tag: payload.tag,
+      created_at: existing?.created_at || now,
+      updated_at: now
+    };
+    db.prepare(`
+      INSERT INTO expenses (id, expense_kind, expense_date, meal_type, amount, title, category, recurring_id, note, tag, created_at, updated_at)
+      VALUES (@id, @expense_kind, @expense_date, @meal_type, @amount, @title, @category, @recurring_id, @note, @tag, @created_at, @updated_at)
+      ON CONFLICT(id) DO UPDATE SET
+        expense_date = excluded.expense_date,
+        amount = excluded.amount,
+        title = excluded.title,
+        category = excluded.category,
+        note = excluded.note,
+        tag = excluded.tag,
+        updated_at = excluded.updated_at
+    `).run(expense);
+    res.json(buildMonthlyPayload(month));
+  } catch (error) { next(error); }
+});
+
+app.delete('/api/monthly/expenses/:id', (req, res, next) => {
+  try {
+    const id = String(req.params.id || '').trim();
+    const month = normalizeMonth(req.query.month || todayISO().slice(0, 7));
+    const row = db.prepare('SELECT recurring_id FROM expenses WHERE id = ? AND expense_kind = ?').get(id, 'monthly');
+    if (row?.recurring_id) {
+      db.prepare('INSERT OR IGNORE INTO skipped_recurring_expenses (recurring_id, month, created_at) VALUES (?, ?, ?)').run(row.recurring_id, month, new Date().toISOString());
+    }
+    db.prepare('DELETE FROM expenses WHERE id = ? AND expense_kind = ?').run(id, 'monthly');
+    res.json(buildMonthlyPayload(month));
+  } catch (error) { next(error); }
+});
+
+app.put('/api/monthly/recurring/:id', (req, res, next) => {
+  try {
+    const id = String(req.params.id || '').trim();
+    const month = normalizeMonth(req.body?.month || todayISO().slice(0, 7));
+    const active = req.body?.active !== false ? 1 : 0;
+    db.prepare('UPDATE recurring_expenses SET active = ?, updated_at = ? WHERE id = ?').run(active, new Date().toISOString(), id);
+    res.json(buildMonthlyPayload(month));
   } catch (error) { next(error); }
 });
 
@@ -217,8 +324,8 @@ app.get('/api/export.csv', (_req, res, next) => {
   try {
     const rows = listExpenses();
     const csvRows = [
-      ['date', 'kind', 'meal_type', 'title', 'amount', 'note', 'tag', 'created_at', 'updated_at'],
-      ...rows.map((row) => [row.date, row.kind, row.mealType, row.title || '', row.amount.toFixed(2), row.note || '', row.tag || '', row.createdAt, row.updatedAt])
+      ['date', 'kind', 'meal_type', 'title', 'category', 'amount', 'note', 'tag', 'created_at', 'updated_at'],
+      ...rows.map((row) => [row.date, row.kind, row.mealType, row.title || '', row.category || '', row.amount.toFixed(2), row.note || '', row.tag || '', row.createdAt, row.updatedAt])
     ];
     const csv = csvRows.map((row) => row.map(csvCell).join(',')).join('\n');
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
@@ -317,6 +424,109 @@ async function sendPushToAll(payload) {
   return { sent, failed };
 }
 
+function buildMonthlyPayload(month) {
+  ensureRecurringInstances(month);
+  const food = listExpenses().filter((entry) => entry.date.startsWith(month) && ['meal', 'extra'].includes(entry.kind));
+  const monthly = db.prepare(`
+    SELECT id, expense_kind, expense_date, meal_type, amount, title, category, recurring_id, note, tag, created_at, updated_at
+    FROM expenses
+    WHERE expense_kind = 'monthly' AND substr(expense_date, 1, 7) = ?
+    ORDER BY expense_date DESC, category ASC, title ASC
+  `).all(month).map(mapExpense);
+  const recurring = db.prepare('SELECT id, title, category, amount, note, tag, day_of_month, active, created_at, updated_at FROM recurring_expenses ORDER BY active DESC, category ASC, title ASC').all().map(mapRecurringExpense);
+  const all = [...food, ...monthly];
+  const foodTotal = sum(food);
+  const monthlyTotal = sum(monthly);
+  const total = foodTotal + monthlyTotal;
+  const previousMonth = shiftMonth(month, -1);
+  const previousFood = listExpenses().filter((entry) => entry.date.startsWith(previousMonth) && ['meal', 'extra'].includes(entry.kind));
+  const previousMonthly = db.prepare('SELECT amount FROM expenses WHERE expense_kind = ? AND substr(expense_date, 1, 7) = ?').all('monthly', previousMonth);
+  const previousTotal = sum(previousFood) + sum(previousMonthly);
+  return {
+    month,
+    food,
+    monthly,
+    recurring,
+    totals: {
+      total,
+      food: foodTotal,
+      nonFood: monthlyTotal,
+      previousTotal,
+      changePercent: previousTotal ? Math.round(((total - previousTotal) / previousTotal) * 100) : null,
+      categories: categoryTotals(all)
+    }
+  };
+}
+function ensureRecurringInstances(month) {
+  const templates = db.prepare('SELECT id, title, category, amount, note, tag, day_of_month FROM recurring_expenses WHERE active = 1').all();
+  const now = new Date().toISOString();
+  const insert = db.prepare(`
+    INSERT OR IGNORE INTO expenses (id, expense_kind, expense_date, meal_type, amount, title, category, recurring_id, note, tag, created_at, updated_at)
+    VALUES (@id, 'monthly', @expense_date, '', @amount, @title, @category, @recurring_id, @note, @tag, @created_at, @updated_at)
+  `);
+  db.transaction(() => {
+    templates.forEach((template) => {
+      const skipped = db.prepare('SELECT 1 FROM skipped_recurring_expenses WHERE recurring_id = ? AND month = ?').get(template.id, month);
+      if (skipped) return;
+      const existing = db.prepare('SELECT 1 FROM expenses WHERE recurring_id = ? AND substr(expense_date, 1, 7) = ?').get(template.id, month);
+      if (existing) return;
+      insert.run({
+        id: crypto.randomUUID(),
+        expense_date: `${month}-${String(Math.min(Number(template.day_of_month || 1), daysInMonth(month))).padStart(2, '0')}`,
+        amount: Number(template.amount),
+        title: template.title,
+        category: template.category,
+        recurring_id: template.id,
+        note: template.note || '',
+        tag: template.tag || '',
+        created_at: now,
+        updated_at: now
+      });
+    });
+  })();
+}
+function normalizeRecurringExpense(input) {
+  const amount = Number(input.amount);
+  const title = String(input.title || '').trim().slice(0, 80);
+  const category = String(input.category || '').trim().slice(0, 40);
+  const dayOfMonth = Number(input.recurringDay || input.dayOfMonth || 1);
+  if (!title) throw badRequest('Recurring expenses need a title.');
+  if (!category) throw badRequest('Recurring expenses need a category.');
+  if (!Number.isFinite(amount) || amount < 0) throw badRequest('Amount cannot be negative.');
+  if (!Number.isInteger(dayOfMonth) || dayOfMonth < 1 || dayOfMonth > 31) throw badRequest('Recurring day must be between 1 and 31.');
+  return {
+    id: crypto.randomUUID(),
+    title,
+    category,
+    amount: Math.round(amount * 100) / 100,
+    note: String(input.note || '').trim().slice(0, 140),
+    tag: String(input.tag || '').trim().slice(0, 32),
+    day_of_month: dayOfMonth
+  };
+}
+function mapRecurringExpense(row) {
+  return {
+    id: row.id,
+    title: row.title,
+    category: row.category,
+    amount: Number(row.amount),
+    note: row.note || '',
+    tag: row.tag || '',
+    dayOfMonth: Number(row.day_of_month || 1),
+    active: Boolean(row.active),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+function categoryTotals(entries) {
+  const totals = entries.reduce((acc, entry) => {
+    const key = entry.kind === 'meal' || entry.kind === 'extra' ? 'Food' : entry.category || 'Other';
+    acc[key] = (acc[key] || 0) + Number(entry.amount || 0);
+    return acc;
+  }, {});
+  return Object.entries(totals).sort((a, b) => b[1] - a[1]).map(([category, total]) => ({ category, total }));
+}
+
 function getSettings() {
   const rows = db.prepare('SELECT key, value FROM settings').all();
   return rows.reduce((acc, row) => {
@@ -334,10 +544,14 @@ function ensureExpenseSchema() {
     if (!columns.has('expense_kind')) db.exec(`ALTER TABLE expenses ADD COLUMN expense_kind TEXT NOT NULL DEFAULT 'meal'`);
     if (!columns.has('title')) db.exec(`ALTER TABLE expenses ADD COLUMN title TEXT DEFAULT ''`);
     if (!columns.has('meal_type')) db.exec(`ALTER TABLE expenses ADD COLUMN meal_type TEXT DEFAULT ''`);
+    if (!columns.has('category')) db.exec(`ALTER TABLE expenses ADD COLUMN category TEXT DEFAULT ''`);
+    if (!columns.has('recurring_id')) db.exec(`ALTER TABLE expenses ADD COLUMN recurring_id TEXT DEFAULT ''`);
   });
   alter();
   db.exec(`DROP INDEX IF EXISTS ux_expenses_date_meal`);
   db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS ux_expenses_date_meal ON expenses(expense_date, meal_type) WHERE expense_kind = 'meal'`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_expenses_kind_date ON expenses(expense_kind, expense_date)`);
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS ux_expenses_recurring_month ON expenses(recurring_id, substr(expense_date, 1, 7)) WHERE recurring_id != ''`);
   db.exec(`UPDATE expenses SET expense_kind = 'meal' WHERE expense_kind IS NULL OR expense_kind = ''`);
 }
 function rebuildExpensesTable() {
@@ -346,11 +560,13 @@ function rebuildExpensesTable() {
     db.exec(`
       CREATE TABLE expenses (
         id TEXT PRIMARY KEY,
-        expense_kind TEXT NOT NULL DEFAULT 'meal' CHECK(expense_kind IN ('meal','extra')),
+        expense_kind TEXT NOT NULL DEFAULT 'meal' CHECK(expense_kind IN ('meal','extra','monthly')),
         expense_date TEXT NOT NULL,
         meal_type TEXT DEFAULT '',
         amount REAL NOT NULL,
         title TEXT DEFAULT '',
+        category TEXT DEFAULT '',
+        recurring_id TEXT DEFAULT '',
         note TEXT DEFAULT '',
         tag TEXT DEFAULT '',
         created_at TEXT NOT NULL,
@@ -358,8 +574,8 @@ function rebuildExpensesTable() {
       )
     `);
     db.exec(`
-      INSERT INTO expenses (id, expense_kind, expense_date, meal_type, amount, title, note, tag, created_at, updated_at)
-      SELECT id, 'meal', expense_date, meal_type, amount, '', note, tag, created_at, updated_at
+      INSERT INTO expenses (id, expense_kind, expense_date, meal_type, amount, title, category, recurring_id, note, tag, created_at, updated_at)
+      SELECT id, 'meal', expense_date, meal_type, amount, '', '', '', note, tag, created_at, updated_at
       FROM expenses_old
     `);
     db.exec(`DROP TABLE expenses_old`);
@@ -380,7 +596,7 @@ function setSettingValue(key, value) {
   db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, JSON.stringify(value));
 }
 function listExpenses() {
-  return db.prepare('SELECT id, expense_kind, expense_date, meal_type, amount, title, note, tag, created_at, updated_at FROM expenses ORDER BY expense_date DESC, expense_kind ASC, meal_type ASC, created_at DESC').all().map(mapExpense);
+  return db.prepare('SELECT id, expense_kind, expense_date, meal_type, amount, title, category, recurring_id, note, tag, created_at, updated_at FROM expenses ORDER BY expense_date DESC, expense_kind ASC, meal_type ASC, created_at DESC').all().map(mapExpense);
 }
 function mapExpense(row) {
   return {
@@ -390,6 +606,8 @@ function mapExpense(row) {
     mealType: row.meal_type || '',
     amount: Number(row.amount),
     title: row.title || '',
+    category: row.category || '',
+    recurringId: row.recurring_id || '',
     note: row.note || '',
     tag: row.tag || '',
     createdAt: row.created_at,
@@ -402,11 +620,13 @@ function normalizeExpense(input) {
   const meal_type = String(input.mealType || '').trim();
   const amount = Number(input.amount);
   const title = String(input.title || '').trim().slice(0, 80);
+  const category = String(input.category || '').trim().slice(0, 40);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(expense_date)) throw badRequest('Invalid date.');
-  if (!['meal', 'extra'].includes(expense_kind)) throw badRequest('Invalid expense kind.');
+  if (!['meal', 'extra', 'monthly'].includes(expense_kind)) throw badRequest('Invalid expense kind.');
   if (expense_kind === 'meal' && !['lunch', 'dinner'].includes(meal_type)) throw badRequest('Invalid meal type.');
-  if (expense_kind === 'extra' && !title) throw badRequest('Extra food expenses need a title.');
-  if (!Number.isFinite(amount) || amount <= 0) throw badRequest('Amount must be greater than zero.');
+  if (['extra', 'monthly'].includes(expense_kind) && !title) throw badRequest('Expense needs a title.');
+  if (expense_kind === 'monthly' && !category) throw badRequest('Monthly expenses need a category.');
+  if (!Number.isFinite(amount) || amount < 0) throw badRequest('Amount cannot be negative.');
   return {
     id: input.id,
     expense_kind,
@@ -414,6 +634,8 @@ function normalizeExpense(input) {
     meal_type: expense_kind === 'meal' ? meal_type : '',
     amount: Math.round(amount * 100) / 100,
     title,
+    category,
+    recurring_id: String(input.recurringId || '').trim(),
     note: String(input.note || '').trim().slice(0, 140),
     tag: String(input.tag || '').trim().slice(0, 32)
   };
@@ -431,6 +653,20 @@ function isPushConfigured() { return Boolean(VAPID_PUBLIC_KEY && VAPID_PRIVATE_K
 function badRequest(message) { const error = new Error(message); error.status = 400; return error; }
 function csvCell(value) { const str = String(value ?? ''); return /[",\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str; }
 function todayISO() { return dateInZone(new Date()); }
+function normalizeMonth(value) {
+  const month = String(value || '').trim();
+  if (!/^\d{4}-\d{2}$/.test(month)) throw badRequest('Invalid month.');
+  return month;
+}
+function shiftMonth(month, offset) {
+  const [year, monthNumber] = month.split('-').map(Number);
+  const date = new Date(Date.UTC(year, monthNumber - 1 + offset, 1));
+  return date.toISOString().slice(0, 7);
+}
+function daysInMonth(month) {
+  const [year, monthNumber] = month.split('-').map(Number);
+  return new Date(Date.UTC(year, monthNumber, 0)).getUTCDate();
+}
 function dateInZone(date) {
   const parts = new Intl.DateTimeFormat('en-CA', { timeZone: APP_TIMEZONE, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(date);
   return `${part(parts, 'year')}-${part(parts, 'month')}-${part(parts, 'day')}`;

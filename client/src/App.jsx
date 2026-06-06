@@ -12,6 +12,7 @@ const DEFAULT_SETTINGS = {
 };
 const MEALS = [{ key: 'lunch', label: 'Lunch' }, { key: 'dinner', label: 'Dinner' }];
 const EXPENSE_KINDS = [{ key: 'meal', label: 'Meal' }, { key: 'extra', label: 'Extra food' }];
+const MONTHLY_CATEGORIES = ['Housing', 'Utilities', 'Transport', 'Groceries', 'Health', 'Subscriptions', 'Shopping', 'Family', 'Travel', 'Other'];
 
 class ErrorBoundary extends React.Component {
   constructor(props) {
@@ -31,6 +32,7 @@ class ErrorBoundary extends React.Component {
 }
 
 function AppContent() {
+  const [route, setRoute] = useState(routeFromPath(window.location.pathname));
   const [screen, setScreen] = useState('home');
   const [expenses, setExpenses] = useState([]);
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
@@ -51,9 +53,23 @@ function AppContent() {
   const [pushBusy, setPushBusy] = useState(false);
   const [filters, setFilters] = useState({ from: startOfMonthISO(todayISO()), to: todayISO(), q: '' });
   const [form, setForm] = useState({ kind: 'meal', mealType: 'lunch', title: '', date: todayISO(), amount: '', note: '', tag: '' });
+  const [monthlyMonth, setMonthlyMonth] = useState(todayISO().slice(0, 7));
+  const [monthlyData, setMonthlyData] = useState(null);
+  const [monthlyLoading, setMonthlyLoading] = useState(false);
+  const [monthlyError, setMonthlyError] = useState('');
+  const [monthlySheetOpen, setMonthlySheetOpen] = useState(false);
+  const [monthlyForm, setMonthlyForm] = useState(newMonthlyForm(todayISO().slice(0, 7)));
 
   useEffect(() => { bootstrap(); }, []);
+  useEffect(() => {
+    const handleRoute = () => setRoute(routeFromPath(window.location.pathname));
+    window.addEventListener('popstate', handleRoute);
+    return () => window.removeEventListener('popstate', handleRoute);
+  }, []);
   useEffect(() => { document.documentElement.dataset.theme = resolveTheme(settings.theme); }, [settings.theme]);
+  useEffect(() => {
+    if (route === 'monthly' && !loading && !requiresToken && !needsApiSetup) fetchMonthly(monthlyMonth);
+  }, [route, monthlyMonth, loading, requiresToken, needsApiSetup]);
   useEffect(() => {
     const handleInstallPrompt = (event) => { event.preventDefault(); setInstallPrompt(event); };
     const handleInstalled = () => { setIsInstalled(true); setInstallPrompt(null); };
@@ -126,8 +142,8 @@ function AppContent() {
 
   async function handleSaveExpense(event) {
     event.preventDefault();
-    if (!Number(form.amount) || Number(form.amount) <= 0) {
-      setToast('Add a valid amount first.');
+    if (form.amount === '' || !Number.isFinite(Number(form.amount)) || Number(form.amount) < 0) {
+      setToast('Add a valid non-negative amount first.');
       return;
     }
     if (form.kind === 'extra' && !form.title.trim()) {
@@ -274,6 +290,97 @@ function AppContent() {
     }
   }
 
+  function navigateTo(path) {
+    window.history.pushState({}, '', path);
+    setRoute(routeFromPath(path));
+  }
+
+  async function fetchMonthly(month) {
+    setMonthlyLoading(true);
+    setMonthlyError('');
+    try {
+      const payload = await api.getMonthly(month);
+      setMonthlyData(payload);
+    } catch (err) {
+      setMonthlyError(err.message || 'Monthly expenses could not be loaded.');
+    } finally {
+      setMonthlyLoading(false);
+    }
+  }
+
+  function openMonthlySheet(entry) {
+    setMonthlyForm(entry
+      ? {
+          id: entry.id,
+          title: entry.title || '',
+          category: entry.category || 'Other',
+          date: entry.date || `${monthlyMonth}-01`,
+          amount: entry.amount ?? '',
+          note: entry.note || '',
+          tag: entry.tag || '',
+          recurring: false,
+          recurringDay: Number(entry.date?.slice(-2) || 1)
+        }
+      : newMonthlyForm(monthlyMonth));
+    setMonthlySheetOpen(true);
+  }
+
+  async function handleSaveMonthlyExpense(event) {
+    event.preventDefault();
+    const amount = Number(monthlyForm.amount);
+    if (!monthlyForm.title.trim()) {
+      setToast('Add an expense title.');
+      return;
+    }
+    if (!monthlyForm.category.trim()) {
+      setToast('Choose a category.');
+      return;
+    }
+    if (monthlyForm.amount === '' || !Number.isFinite(amount) || amount < 0) {
+      setToast('Add a valid non-negative amount first.');
+      return;
+    }
+    try {
+      const payload = await api.saveMonthlyExpense({
+        id: monthlyForm.id || undefined,
+        month: monthlyMonth,
+        title: monthlyForm.title,
+        category: monthlyForm.category,
+        date: monthlyForm.date || `${monthlyMonth}-01`,
+        amount,
+        note: monthlyForm.note,
+        tag: monthlyForm.tag,
+        recurring: Boolean(monthlyForm.recurring && !monthlyForm.id),
+        recurringDay: Number(monthlyForm.recurringDay || 1)
+      });
+      setMonthlyData(payload);
+      setMonthlySheetOpen(false);
+      setToast('Monthly expense saved.');
+    } catch (err) {
+      setToast(err.message || 'Could not save monthly expense.');
+    }
+  }
+
+  async function deleteMonthlyExpense(entry) {
+    try {
+      const payload = await api.deleteMonthlyExpense(entry.id, monthlyMonth);
+      setMonthlyData(payload);
+      setToast(entry.recurringId ? 'Skipped this recurring expense for the month.' : 'Monthly expense deleted.');
+    } catch (err) {
+      setToast(err.message || 'Delete failed.');
+    }
+  }
+
+  async function pauseRecurringExpense(entry) {
+    try {
+      const payload = await api.updateRecurringExpense(entry.id, { active: false, month: monthlyMonth });
+      setMonthlyData(payload);
+      setToast('Recurring expense paused.');
+    } catch (err) {
+      setToast(err.message || 'Recurring expense could not be paused.');
+    }
+  }
+
   if (requiresToken) {
     return <div className="auth-shell"><div className="auth-card"><p className="eyebrow">Private deployment</p><h1>Connect to your app</h1><p className="muted">This backend expects your private app token.</p><form className="stack" onSubmit={saveTokenAndRetry}><label className="field"><span>App token</span><input className="input" value={tokenDraft} onChange={(event) => setTokenDraft(event.target.value)} placeholder="Paste APP_TOKEN" /></label><button className="primary-btn" type="submit">Save token</button></form>{error ? <p className="inline-error">{error}</p> : null}</div></div>;
   }
@@ -283,12 +390,14 @@ function AppContent() {
   }
 
   return <div className="app-shell"><div className="app-frame">
-    <header className="topbar"><div className="brand"><div className="logo" aria-hidden="true">M</div><div><p className="eyebrow">Private tracker</p><h1>Meal Check In</h1></div></div><div className="topbar-actions">{installPrompt ? <button className="icon-btn" onClick={installApp}>Install</button> : null}<button className="icon-btn" onClick={() => patchSettings({ theme: nextTheme(settings.theme) })}>{themeLabel(settings.theme)}</button></div></header>
+    <header className="topbar"><div className="brand"><div className="logo" aria-hidden="true">M</div><div><p className="eyebrow">Private tracker</p><h1>Meal Check In</h1></div></div><div className="topbar-actions"><button className="icon-btn" onClick={() => navigateTo(route === 'monthly' ? '/' : '/expenses')}>{route === 'monthly' ? 'Meals' : 'Monthly'}</button>{installPrompt ? <button className="icon-btn" onClick={installApp}>Install</button> : null}<button className="icon-btn" onClick={() => patchSettings({ theme: nextTheme(settings.theme) })}>{themeLabel(settings.theme)}</button></div></header>
     {offlineMessage ? <div className="banner">{offlineMessage}</div> : null}
     {loading ? <div className="section loading-card">Loading your tracker...</div> : null}
     {error && !loading ? <div className="section inline-error">{error}</div> : null}
 
     {!loading && !error ? <main className="content">
+      {route === 'monthly' ? <MonthlyExpensesView month={monthlyMonth} setMonth={setMonthlyMonth} data={monthlyData} loading={monthlyLoading} error={monthlyError} settings={settings} onBack={() => navigateTo('/')} onAdd={() => openMonthlySheet()} onEdit={openMonthlySheet} onDelete={deleteMonthlyExpense} onPauseRecurring={pauseRecurringExpense} /> : null}
+      {route !== 'monthly' ? <>
       {screen === 'home' ? <section className="screen-block">
         <section className="hero-panel"><div className="hero-row"><div><p className="eyebrow">Today</p><h2>{prettyDate(selectedDate)}</h2><p className="muted">Log lunch and dinner, then let the app handle reminders.</p></div><input className="date-input" type="date" value={selectedDate} onChange={(event) => setSelectedDate(event.target.value)} /></div><div className="progress-line"><span style={{ width: `${completedMeals * 50}%` }} /></div><div className="hero-totals"><Metric label="Today" value={formatCurrency(todayTotal, settings.currency)} /><Metric label="This week" value={formatCurrency(selectedWeekTotal, settings.currency)} /><Metric label="Streak" value={`${streak} day${streak === 1 ? '' : 's'}`} /></div></section>
         <section className="meal-grid">{MEALS.map((meal) => { const entry = mealEntries.find((item) => item.mealType === meal.key); return <article className="meal-card" key={meal.key}><div className="row-between"><div className={`status-pill ${entry ? 'done' : ''}`}>{meal.label}</div><span className={`tag ${entry ? '' : 'pending'}`}>{entry ? 'Saved' : 'Pending'}</span></div><div><div className="amount">{entry ? formatCurrency(entry.amount, settings.currency) : 'Not logged'}</div><p className="muted meal-note">{entry ? entry.note || entry.tag || 'Saved for this meal.' : 'Amount is required; note and tag are optional.'}</p></div><div className="row-between actions-row"><span className="helper">{entry?.tag || 'Fast edit for any date'}</span><button className={`action-btn ${entry ? 'secondary' : ''}`} onClick={() => openSheet(meal.key)}>{entry ? `Edit ${meal.label}` : `Add ${meal.label}`}</button></div></article>; })}</section>
@@ -300,12 +409,14 @@ function AppContent() {
       {screen === 'history' ? <section className="screen-block"><section className="section"><div className="section-head"><h2>History</h2></div><div className="filter-grid"><label className="field"><span>From</span><input className="input" type="date" value={filters.from} onChange={(event) => setFilters((current) => ({ ...current, from: event.target.value }))} /></label><label className="field"><span>To</span><input className="input" type="date" value={filters.to} onChange={(event) => setFilters((current) => ({ ...current, to: event.target.value }))} /></label></div><label className="field"><span>Search note or tag</span><input className="input" type="search" placeholder="Office, home, travel" value={filters.q} onChange={(event) => setFilters((current) => ({ ...current, q: event.target.value }))} /></label><div className="stat-grid two"><StatCard label="Visible days" value={String(historyDates.length)} /><StatCard label="Visible total" value={formatCurrency(sum(historyEntries), settings.currency)} /></div><div className="history-list">{historyDates.length ? historyDates.map((date) => <article className="day-card" key={date}><div className="row-between day-head"><div><h3>{prettyDate(date)}</h3><p className="muted">{groupedHistory[date].length} entries</p></div><strong className="day-total">{formatCurrency(sum(groupedHistory[date]), settings.currency)}</strong></div>{groupedHistory[date].map((entry) => <div className="history-row" key={entry.id}><div><p className="history-meal">{entry.kind === 'extra' ? (entry.title || 'Extra food') : title(entry.mealType)} {entry.tag ? <span className="tag">{entry.tag}</span> : null}</p><p className="muted small">{entry.note || (entry.kind === 'extra' ? 'One-off food expense' : 'No note')}</p></div><div className="history-actions"><strong>{formatCurrency(entry.amount, settings.currency)}</strong><button className="tiny-link" onClick={() => handleDelete(entry.date, entry.kind, entry.kind === 'meal' ? entry.mealType : entry.id)}>Delete</button></div></div>)}</article>) : <div className="empty-state"><strong>No matching days yet</strong><p>Try a broader date range or clear your search.</p></div>}</div></section></section> : null}
 
       {screen === 'settings' ? <section className="screen-block"><section className="section settings-stack"><div className="section-head"><h2>Settings</h2></div><div className="filter-grid"><label className="field"><span>Reminder time</span><input className="input" type="time" value={settings.reminderTime} onChange={(event) => patchSettings({ reminderTime: event.target.value })} /></label><label className="field"><span>Currency</span><select className="input" value={settings.currency} onChange={(event) => patchSettings({ currency: event.target.value })}><option value="INR">INR</option><option value="USD">USD</option><option value="EUR">EUR</option><option value="GBP">GBP</option></select></label></div><label className="field"><span>Monthly budget</span><input className="input" type="number" min="0" step="0.01" value={settings.monthlyBudget || ''} onChange={(event) => patchSettings({ monthlyBudget: Number(event.target.value || 0) })} placeholder="Optional" /></label><div className="setting-row"><div><p>Daily push reminders</p><small>Server sends a reminder at {settings.reminderTime} when a meal is missing.</small></div><button className={`toggle ${settings.notificationsEnabled ? 'on' : ''}`} disabled={pushBusy} onClick={settings.notificationsEnabled ? disablePush : enablePush}>{settings.notificationsEnabled ? 'On' : 'Off'}</button></div><div className="setting-row"><div><p>Weekly summary</p><small>Sunday evening total, streak, and logged days.</small></div><button className={`toggle ${settings.weeklySummaryEnabled ? 'on' : ''}`} onClick={() => patchSettings({ weeklySummaryEnabled: !settings.weeklySummaryEnabled })}>{settings.weeklySummaryEnabled ? 'On' : 'Off'}</button></div><div className="setting-row"><div><p>Push status</p><small>{pushStatus.configured ? `${pushStatus.subscriptions} active device${pushStatus.subscriptions === 1 ? '' : 's'}; permission ${permission}` : 'Server VAPID keys are not configured.'}</small></div><button className="ghost-btn" disabled={pushBusy || !pushStatus.configured} onClick={sendTestPush}>Test</button></div><div className="setting-row"><div><p>Install status</p><small>{isInstalled ? 'Installed as a standalone app.' : installPrompt ? 'Ready to install on this device.' : 'Install prompt appears when the browser allows it.'}</small></div><button className="ghost-btn" disabled={!installPrompt} onClick={installApp}>Install</button></div><div className="field"><span>Backend API URL</span><input className="input" value={apiBaseDraft} onChange={(event) => setApiBaseDraft(event.target.value)} placeholder="https://api.example.com" /><div className="row-between actions-row compact"><button className="ghost-btn" onClick={() => { const clean = api.setApiBase(apiBaseDraft); setApiBaseDraft(clean); setToast('Backend URL saved.'); bootstrap(); }}>Save URL</button><button className="ghost-btn" onClick={() => { api.setApiBase(''); setApiBaseDraft(''); setToast('Backend URL cleared.'); }}>Clear</button></div></div><div className="field"><span>API token</span><input className="input" value={tokenDraft} onChange={(event) => setTokenDraft(event.target.value)} placeholder="Only needed if APP_TOKEN is set" /><div className="row-between actions-row compact"><button className="ghost-btn" onClick={() => { api.setToken(tokenDraft.trim()); setToast('Token saved in this browser.'); }}>Save token</button><button className="ghost-btn" onClick={() => { api.setToken(''); setTokenDraft(''); setToast('Token cleared.'); }}>Clear</button></div></div></section></section> : null}
+      </> : null}
     </main> : null}
   </div>
 
-  <nav className="bottom-nav"><button className={screen === 'home' ? 'active' : ''} onClick={() => setScreen('home')}>Today</button><button className={screen === 'history' ? 'active' : ''} onClick={() => setScreen('history')}>History</button><button className="add-btn" onClick={() => openSheet(nextMeal(currentEntries))}>+</button><button className={screen === 'settings' ? 'active' : ''} onClick={() => setScreen('settings')}>Settings</button></nav>
+  {route !== 'monthly' ? <nav className="bottom-nav"><button className={screen === 'home' ? 'active' : ''} onClick={() => setScreen('home')}>Today</button><button className={screen === 'history' ? 'active' : ''} onClick={() => setScreen('history')}>History</button><button className="add-btn" onClick={() => openSheet(nextMeal(currentEntries))}>+</button><button className={screen === 'settings' ? 'active' : ''} onClick={() => setScreen('settings')}>Settings</button></nav> : null}
 
   {sheetOpen ? <div className="sheet-backdrop" onClick={() => setSheetOpen(false)}><div className="sheet" onClick={(event) => event.stopPropagation()}><div className="sheet-head"><div><p className="eyebrow">Quick add</p><h3>{form.kind === 'extra' ? 'Extra food' : title(form.mealType)}</h3></div><button className="icon-btn" onClick={() => setSheetOpen(false)}>Close</button></div><form className="stack" onSubmit={handleSaveExpense}><label className="field"><span>Type</span><select className="input" value={form.kind} onChange={(event) => setForm((current) => ({ ...current, kind: event.target.value, title: event.target.value === 'extra' ? current.title : '' }))}>{EXPENSE_KINDS.map((kind) => <option key={kind.key} value={kind.key}>{kind.label}</option>)}</select></label>{form.kind === 'meal' ? <label className="field"><span>Meal</span><select className="input" value={form.mealType} onChange={(event) => setForm((current) => ({ ...current, mealType: event.target.value }))}>{MEALS.map((meal) => <option key={meal.key} value={meal.key}>{meal.label}</option>)}</select></label> : <label className="field"><span>Title</span><input className="input" value={form.title} onChange={(event) => setForm((current) => ({ ...current, title: event.target.value }))} placeholder="Snacks, tea, dessert, extra meal" /></label>}<label className="field"><span>Date</span><input className="input" type="date" value={form.date} onChange={(event) => setForm((current) => ({ ...current, date: event.target.value }))} /></label><label className="field"><span>Amount</span><input className="input amount-input" inputMode="decimal" type="number" min="0" step="0.01" value={form.amount} onChange={(event) => setForm((current) => ({ ...current, amount: event.target.value }))} placeholder="0" /></label><label className="field"><span>Note</span><textarea className="input textarea" value={form.note} onChange={(event) => setForm((current) => ({ ...current, note: event.target.value }))} placeholder="Home food, outside, takeaway" /></label><label className="field"><span>Category / tag</span><input className="input" value={form.tag} onChange={(event) => setForm((current) => ({ ...current, tag: event.target.value }))} placeholder="Office, Home, Travel" /></label><button className="primary-btn" type="submit">Save entry</button></form></div></div> : null}
+  {monthlySheetOpen ? <div className="sheet-backdrop" onClick={() => setMonthlySheetOpen(false)}><div className="sheet" onClick={(event) => event.stopPropagation()}><div className="sheet-head"><div><p className="eyebrow">Monthly ledger</p><h3>{monthlyForm.id ? 'Edit expense' : 'Add expense'}</h3></div><button className="icon-btn" onClick={() => setMonthlySheetOpen(false)}>Close</button></div><form className="stack" onSubmit={handleSaveMonthlyExpense}><div className="filter-grid"><label className="field"><span>Title</span><input className="input" value={monthlyForm.title} onChange={(event) => setMonthlyForm((current) => ({ ...current, title: event.target.value }))} placeholder="Rent, recharge, medicine" /></label><label className="field"><span>Category</span><select className="input" value={monthlyForm.category} onChange={(event) => setMonthlyForm((current) => ({ ...current, category: event.target.value }))}>{MONTHLY_CATEGORIES.map((category) => <option key={category} value={category}>{category}</option>)}</select></label></div><div className="filter-grid"><label className="field"><span>Date</span><input className="input" type="date" value={monthlyForm.date} onChange={(event) => setMonthlyForm((current) => ({ ...current, date: event.target.value }))} /></label><label className="field"><span>Amount</span><input className="input" type="number" min="0" step="0.01" inputMode="decimal" value={monthlyForm.amount} onChange={(event) => setMonthlyForm((current) => ({ ...current, amount: event.target.value }))} placeholder="0" /></label></div><label className="field"><span>Note</span><textarea className="input textarea" value={monthlyForm.note} onChange={(event) => setMonthlyForm((current) => ({ ...current, note: event.target.value }))} placeholder="Optional context" /></label><label className="field"><span>Tag</span><input className="input" value={monthlyForm.tag} onChange={(event) => setMonthlyForm((current) => ({ ...current, tag: event.target.value }))} placeholder="UPI, card, cash, planned" /></label>{!monthlyForm.id ? <div className="setting-row"><div><p>Repeat every month</p><small>Create this entry automatically for future months.</small></div><button type="button" className={`toggle ${monthlyForm.recurring ? 'on' : ''}`} onClick={() => setMonthlyForm((current) => ({ ...current, recurring: !current.recurring }))}>{monthlyForm.recurring ? 'On' : 'Off'}</button></div> : null}{monthlyForm.recurring && !monthlyForm.id ? <label className="field"><span>Repeat day</span><input className="input" type="number" min="1" max="31" value={monthlyForm.recurringDay} onChange={(event) => setMonthlyForm((current) => ({ ...current, recurringDay: event.target.value }))} /></label> : null}<button className="primary-btn" type="submit">Save expense</button></form></div></div> : null}
   {toast ? <div className="toast">{toast}</div> : null}
   </div>;
 }
@@ -316,6 +427,22 @@ export default function App() {
 
 function Metric({ label, value }) { return <div><span>{label}</span><strong>{value}</strong></div>; }
 function StatCard({ label, value }) { return <div className="stat-card"><span>{label}</span><strong>{value}</strong></div>; }
+function MonthlyExpensesView({ month, setMonth, data, loading, error, settings, onBack, onAdd, onEdit, onDelete, onPauseRecurring }) {
+  const totals = data?.totals || { total: 0, food: 0, nonFood: 0, previousTotal: 0, changePercent: null, categories: [] };
+  const monthly = data?.monthly || [];
+  const recurring = data?.recurring || [];
+  const food = data?.food || [];
+  const foodEntries = food.slice(0, 6);
+  return <section className="screen-block monthly-workspace">
+    <section className="hero-panel"><div className="hero-row"><div><p className="eyebrow">Monthly expenses</p><h2>{formatMonth(month)}</h2><p className="muted">Food expenses are counted automatically from your meal tracker.</p></div><div className="month-actions"><input className="date-input" type="month" value={month} onChange={(event) => setMonth(event.target.value)} /><button className="ghost-btn" onClick={onBack}>Meals</button></div></div><div className="hero-totals monthly-totals"><Metric label="All expenses" value={formatCurrency(totals.total, settings.currency)} /><Metric label="Food" value={formatCurrency(totals.food, settings.currency)} /><Metric label="Other" value={formatCurrency(totals.nonFood, settings.currency)} /></div>{totals.changePercent === null ? <p className="muted small monthly-change">No previous month comparison yet.</p> : <p className="muted small monthly-change">{totals.changePercent >= 0 ? '+' : ''}{totals.changePercent}% versus previous month ({formatCurrency(totals.previousTotal, settings.currency)}).</p>}</section>
+    {error ? <div className="section inline-error">{error}</div> : null}
+    {loading ? <div className="section loading-card">Loading monthly ledger...</div> : null}
+    {!loading ? <section className="section"><div className="section-head"><h3>Spend by category</h3><button className="ghost-btn" onClick={onAdd}>Add expense</button></div>{totals.categories.length ? <div className="category-list">{totals.categories.map((item) => <div className="category-row" key={item.category}><div><strong>{item.category}</strong><span>{Math.round((item.total / Math.max(1, totals.total)) * 100)}% of month</span></div><strong>{formatCurrency(item.total, settings.currency)}</strong></div>)}</div> : <div className="empty-state"><strong>No monthly expenses yet</strong><p>Add a monthly item or record a meal expense from the main tracker.</p></div>}</section> : null}
+    {!loading ? <section className="section"><div className="section-head"><h3>Other monthly expenses</h3><button className="ghost-btn" onClick={onAdd}>Add</button></div>{monthly.length ? <div className="monthly-list">{monthly.map((entry) => <div className="monthly-row" key={entry.id}><div><p className="history-meal">{entry.title} <span className="tag">{entry.category || 'Other'}</span></p><p className="muted small">{shortDate(entry.date)}{entry.recurringId ? ' - recurring' : ''}{entry.note ? ` - ${entry.note}` : ''}</p></div><div className="history-actions"><strong>{formatCurrency(entry.amount, settings.currency)}</strong><button className="tiny-link" onClick={() => onEdit(entry)}>Edit</button><button className="tiny-link" onClick={() => onDelete(entry)}>{entry.recurringId ? 'Skip' : 'Delete'}</button></div></div>)}</div> : <div className="empty-state"><strong>No other expenses for this month</strong><p>Rent, bills, transport, shopping, subscriptions, and recurring costs go here.</p></div>}</section> : null}
+    {!loading ? <section className="section"><div className="section-head"><h3>Food rollup</h3><strong>{formatCurrency(totals.food, settings.currency)}</strong></div>{foodEntries.length ? <div className="monthly-list">{foodEntries.map((entry) => <div className="monthly-row" key={entry.id}><div><p className="history-meal">{entry.kind === 'extra' ? entry.title || 'Extra food' : title(entry.mealType)}</p><p className="muted small">{shortDate(entry.date)}{entry.note ? ` - ${entry.note}` : ''}</p></div><strong>{formatCurrency(entry.amount, settings.currency)}</strong></div>)}</div> : <div className="empty-state"><strong>No food spend this month</strong><p>Meal and extra food entries from the main page will appear here automatically.</p></div>}{food.length > foodEntries.length ? <p className="muted small monthly-more">Showing {foodEntries.length} of {food.length} food entries.</p> : null}</section> : null}
+    {!loading ? <section className="section"><div className="section-head"><h3>Recurring expenses</h3><span className="helper">{recurring.filter((item) => item.active).length} active</span></div>{recurring.length ? <div className="monthly-list">{recurring.map((entry) => <div className="monthly-row" key={entry.id}><div><p className="history-meal">{entry.title} <span className={`tag ${entry.active ? '' : 'pending'}`}>{entry.active ? 'Active' : 'Paused'}</span></p><p className="muted small">{entry.category} - day {entry.dayOfMonth}{entry.note ? ` - ${entry.note}` : ''}</p></div><div className="history-actions"><strong>{formatCurrency(entry.amount, settings.currency)}</strong>{entry.active ? <button className="tiny-link" onClick={() => onPauseRecurring(entry)}>Pause</button> : null}</div></div>)}</div> : <div className="empty-state"><strong>No recurring expenses</strong><p>Turn on repeat when adding rent, recharge, subscriptions, or other fixed costs.</p></div>}</section> : null}
+  </section>;
+}
 function sum(items) { return items.reduce((total, item) => total + Number(item.amount || item.total || 0), 0); }
 function sortExpenses(entries) { return [...entries].sort((a, b) => (a.date === b.date ? `${a.kind}-${a.mealType}-${a.createdAt}`.localeCompare(`${b.kind}-${b.mealType}-${b.createdAt}`) : b.date.localeCompare(a.date))); }
 function rangeExpenses(expenses, from, to) { return expenses.filter((entry) => entry.date >= from && entry.date <= to); }
@@ -341,12 +468,15 @@ function buildInsights(expenses, settings, selectedDate) {
   return { averageMeal, topTag, weekChange, lastSeven: rawSeven.map((day) => ({ ...day, height: Math.max(8, Math.round((day.total / max) * 100)) })) };
 }
 function formatCurrency(value, currency) { return new Intl.NumberFormat(undefined, { style: 'currency', currency, maximumFractionDigits: 2 }).format(value || 0); }
+function formatMonth(month) { return new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric' }).format(new Date(`${month}-01T00:00:00`)); }
 function prettyDate(iso) { return new Intl.DateTimeFormat(undefined, { weekday: 'short', day: 'numeric', month: 'long', year: 'numeric' }).format(new Date(`${iso}T00:00:00`)); }
 function shortDate(iso) { return new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short' }).format(new Date(`${iso}T00:00:00`)); }
 function nextMeal(entries) { return entries.some((item) => item.mealType === 'lunch') ? 'dinner' : 'lunch'; }
 function nextTheme(theme) { return theme === 'system' ? 'dark' : theme === 'dark' ? 'light' : 'system'; }
 function themeLabel(theme) { return theme === 'system' ? 'Auto' : theme === 'dark' ? 'Dark' : 'Light'; }
 function resolveTheme(theme) { if (theme === 'dark' || theme === 'light') return theme; return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+function routeFromPath(pathname) { return pathname === '/expenses' ? 'monthly' : 'main'; }
+function newMonthlyForm(month) { return { id: '', title: '', category: 'Other', date: `${month}-01`, amount: '', note: '', tag: '', recurring: false, recurringDay: '1' }; }
 function startOfMonthISO(iso) { const d = new Date(`${iso}T00:00:00`); d.setDate(1); return toISO(d); }
 function startOfWeekISO(iso) { const d = new Date(`${iso}T00:00:00`); const day = d.getDay(); const diff = day === 0 ? -6 : 1 - day; d.setDate(d.getDate() + diff); return toISO(d); }
 function endOfWeekISO(iso) { return shiftISO(startOfWeekISO(iso), 6); }

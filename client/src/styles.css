@@ -113,6 +113,18 @@ h1, h2, h3, p { margin-top: 0; }
 .empty-state { padding: 28px 16px; text-align: center; color: var(--muted); border-radius: 18px; background: var(--surface-2); border: 1px solid var(--border); }
 .empty-state strong { display: block; color: var(--text); margin-bottom: 8px; }
 
+.monthly-workspace { padding-bottom: 18px; }
+.month-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
+.monthly-totals { margin-top: 18px; }
+.monthly-change, .monthly-more { margin: 12px 0 0; }
+.category-list, .monthly-list { display: grid; gap: 0; }
+.category-row, .monthly-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding: 14px 0; border-top: 1px solid var(--border); }
+.category-row:first-child, .monthly-row:first-child { border-top: 0; }
+.category-row div, .monthly-row div:first-child { min-width: 0; }
+.category-row span { display: block; margin-top: 4px; color: var(--muted); font-size: 13px; }
+.category-row strong:last-child, .monthly-row > strong { white-space: nowrap; }
+.monthly-row .history-actions { min-width: 86px; }
+
 .bottom-nav { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); width: min(calc(100% - 16px), 640px); display: grid; grid-template-columns: 1fr 1fr auto 1fr; gap: 8px; padding: 10px; border-radius: 24px; border: 1px solid var(--border); background: var(--surface); box-shadow: var(--shadow-lg); }
 .bottom-nav button { min-height: 50px; border: 0; border-radius: 16px; background: transparent; color: var(--muted); font-weight: 750; }
 .bottom-nav button.active { background: var(--primary-soft); color: var(--primary); }
@@ -139,5 +151,9 @@ h1, h2, h3, p { margin-top: 0; }
   .setting-row .ghost-btn, .setting-row .toggle { width: 100%; }
   .actions-row { align-items: stretch; flex-direction: column; }
   .action-btn { width: 100%; }
+  .month-actions { justify-content: stretch; }
+  .month-actions .date-input, .month-actions .ghost-btn { width: 100%; }
+  .category-row, .monthly-row { align-items: stretch; flex-direction: column; }
+  .monthly-row .history-actions { text-align: left; }
   .spark-bars { gap: 6px; }
 }

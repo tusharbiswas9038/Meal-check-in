@@ -1,6 +1,6 @@
 # Meal Check In Cloud
 
-A private React + Express + SQLite food expense tracker with lunch/dinner check-ins, additional food expenses, PWA install support, web push reminders, weekly summaries, CSV export, and Cloudflare-hosted frontend deployment.
+A private React + Express + SQLite expense tracker with lunch/dinner check-ins, additional food expenses, a separate monthly expense workspace, PWA install support, web push reminders, weekly summaries, CSV export, and Cloudflare-hosted frontend deployment.
 
 ## Architecture
 
@@ -155,6 +155,16 @@ VITE_API_BASE=https://YOUR_API_DOMAIN
 3. If prompted, enter the private `APP_TOKEN` from the VPS `.env` file.
 4. Go to Settings and enable daily push reminders.
 5. Press Test under Push status to confirm notifications work.
+
+## Monthly Expenses
+
+Use the `Monthly` button in the app header, or open `/expenses`, to track full monthly spending separately from the main meal check-in screen.
+
+- Meal and extra food expenses are counted automatically as the Food category.
+- Add other monthly costs such as rent, utilities, transport, subscriptions, health, shopping, travel, and family expenses.
+- Amounts can be `0`, which is useful when you want to mark a planned lunch, dinner, or monthly item as no spend.
+- Turn on Repeat every month when adding fixed costs. The backend creates that expense for each month automatically.
+- Deleting a recurring entry from a month skips it for that month; pausing the recurring template stops future automatic entries.
 
 ## Production Notes
 
